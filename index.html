@@ -346,11 +346,178 @@ body:not(.show-notes) .notes-only { display: none !important; }
 <audio id="rec-audio"></audio>
 <script id="data" type="application/json">null</script>
 <script>
+// ==== 재생 목록 (queue) ====
+// study.fill_template()이 template.html 스크립트 맨 앞(ytcardsViewer 밖)에 끼워 넣는다.
+// 재생 방식대로 문장을 재생하고 현재 문장을 정한다. DOM은 모르고, 넘겨받은 오디오·타이머만 쓴다.
+// tests/viewer/queue.test.mjs가 가짜 오디오·시계로 이 파일을 그대로 불러 테스트한다.
+//
+// o.sentences       [{start, end}, ...]
+// o.audio           currentTime, paused, playbackRate, play(), pause()  (<audio> 또는 가짜)
+// o.timers          setTimeout(fn, ms), clearTimeout(id)                  (window 또는 가짜 시계)
+// o.mode, o.rate    처음 재생 방식("one" | "loop" | "cont" | "all")과 속도
+// o.onActive(i, scroll)  현재 문장이 바뀌었을 때 (i는 -1일 수 있음, scroll은 재생 중이라 따라가야 하는지)
+// o.onPlayingChange()    isPlaying()이 바뀌었을 수 있을 때 (쉬는 구간 시작·끝)
+// 바깥에서 오디오 이벤트를 넘겨준다: timeupdate·play·pause·seeked마다 tick(), ended에서 ended()
+function ytcardsQueue(o) {
+  "use strict";
+  var S = o.sentences, audio = o.audio, timers = o.timers;
+  var onActive = o.onActive || function () {};
+  var onPlayingChange = o.onPlayingChange || function () {};
+  var TAIL = 0.15; // 문장 끝 여유 (초)
+  var mode = o.mode, rate = o.rate;
+  // seg: 한 문장 재생 {i, gap, done}. 끝나면 gap초 쉬고 done을 부른다 (비교 듣기에서 씀).
+  // seg가 null이면 이어서 재생 중이거나 멈춘 상태
+  var seg = null;
+  var gapTimer = null;
+  var hold = -1; // 한 문장을 다 재생하고 멈췄을 때 현재 문장으로 유지할 문장 (끝의 여유에서 다음 문장으로 넘어가지 않게)
+  var active = -1;
+  audio.playbackRate = rate;
+
+  function current() { return Math.max(active, 0); }
+  function oneSentenceMode() { return mode === "one" || mode === "loop"; }
+  function indexAt(t) {
+    var lo = 0, hi = S.length - 1, ans = -1;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (S[mid].start <= t + 0.05) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return ans;
+  }
+  function setActive(i, scroll) {
+    if (i === active) return;
+    active = i;
+    onActive(i, scroll);
+  }
+  function waiting() { return gapTimer != null; }
+  // 쉬는 구간(gap)에는 오디오가 멈춰 있지만 재생 중으로 본다
+  function isPlaying() { return !audio.paused || waiting(); }
+  function clearGap() {
+    if (gapTimer == null) return;
+    timers.clearTimeout(gapTimer);
+    gapTimer = null;
+    onPlayingChange();
+  }
+
+  function playSegment(i, scroll, gap, done) {
+    clearGap();
+    hold = -1;
+    seg = { i: i, gap: gap || 0, done: done || null };
+    audio.currentTime = S[i].start;
+    setActive(i, scroll);
+    audio.play();
+  }
+  function playContinuous(i, scroll) {
+    clearGap();
+    hold = -1;
+    seg = null;
+    audio.currentTime = S[i].start;
+    setActive(i, scroll);
+    audio.play();
+  }
+  // 재생 방식대로 문장 i부터 재생한다 (재생·이전·다음·문장 누르기 공통)
+  function playAt(i, scroll) {
+    i = Math.min(S.length - 1, Math.max(0, i));
+    if (oneSentenceMode()) playSegment(i, scroll);
+    else playContinuous(i, scroll);
+  }
+  // 재생 방식과 상관없이 문장 i 하나만 재생하고, pauseAfter초 쉰 뒤 then을 부른다.
+  // 그사이 다른 재생을 시작하면 then을 부르지 않는다
+  function playSentence(i, opts) {
+    opts = opts || {};
+    playSegment(i, false, opts.pauseAfter, opts.then);
+  }
+  function finishSegment() {
+    var s = seg;
+    if (!s.gap && !s.done && mode === "loop") {
+      audio.currentTime = S[s.i].start; // 한 문장 반복: 멈추지 않고 되감는다
+      return;
+    }
+    audio.pause();
+    if (s.gap) {
+      // 느리게 재생하면 쉬는 시간도 그만큼 늘린다
+      gapTimer = timers.setTimeout(function () {
+        gapTimer = null;
+        endSegment(s);
+      }, s.gap * 1000 / rate);
+      onPlayingChange();
+    } else {
+      endSegment(s);
+    }
+  }
+  function endSegment(s) {
+    onPlayingChange();
+    if (seg !== s) return; // 그사이 다른 재생을 시작했으면 무시
+    hold = s.i;
+    seg = null;
+    if (s.done) s.done();
+  }
+  function stop() {
+    clearGap();
+    seg = null;
+    audio.pause();
+  }
+  function step(delta) {
+    playAt(current() + delta, true);
+  }
+  // 가운데 버튼: 재생 중이면 멈추고, 멈춰 있으면 현재 문장을 재생 방식대로 재생한다.
+  // 문장 중간에서 멈췄으면 그 자리부터 이어서, 문장을 다 들은 뒤면 처음부터 다시 듣는다
+  function toggle() {
+    if (waiting()) {
+      stop();
+      return;
+    }
+    if (!audio.paused) {
+      audio.pause();
+      return;
+    }
+    var i = current(), t = audio.currentTime;
+    if (t > S[i].start + 0.05 && t < S[i].end) {
+      seg = oneSentenceMode() ? (seg && seg.i === i ? seg : { i: i, gap: 0, done: null }) : null;
+      hold = -1;
+      audio.play();
+    } else {
+      playAt(i, true);
+    }
+  }
+  // 재생 중에 방식을 바꾸면 지금 문장부터 새 방식을 따른다 (비교 듣기 중이면 그대로 둔다)
+  function setMode(m) {
+    mode = m;
+    if (!audio.paused && !(seg && seg.done)) {
+      seg = oneSentenceMode() ? { i: current(), gap: 0, done: null } : null;
+    }
+  }
+  function setRate(r) {
+    rate = r;
+    audio.playbackRate = r;
+  }
+
+  function tick() {
+    if (seg && !audio.paused && audio.currentTime >= S[seg.i].end + TAIL) finishSegment();
+    var i = indexAt(audio.currentTime);
+    // 한 문장 재생은 끝의 여유(TAIL)에서 다음 문장으로 넘어가지 않게 한다
+    if (seg) i = seg.i;
+    else if (hold >= 0 && audio.paused) i = hold;
+    else hold = -1;
+    setActive(i, !audio.paused);
+  }
+  // 마지막 문장은 TAIL 전에 오디오가 끝날 수 있다
+  function ended() {
+    if (seg) finishSegment();
+    else if (mode === "all") playContinuous(0, true);
+  }
+
+  return {
+    playAt: playAt, playSentence: playSentence, toggle: toggle, step: step, stop: stop,
+    setMode: setMode, setRate: setRate,
+    tick: tick, ended: ended,
+    current: current, isPlaying: isPlaying,
+  };
+}
+
 // 학습 화면. study.html은 파일에 든 데이터로, 웹앱은 저장소에서 꺼낸 데이터로 부른다 (#audio의 src는 미리 넣어 둔다)
 function ytcardsViewer(DATA) {
   "use strict";
   var S = DATA.sentences;
-  var TAIL = 0.15; // 문장 끝 여유 (초)
   var RATES = [0.6, 0.75, 0.9, 1.0, 1.25];
   // 재생 방식: 재생·이전·다음·문장 누르기가 모두 이 방식대로 재생한다
   var MODES = ["one", "loop", "cont", "all"];
@@ -620,7 +787,6 @@ function ytcardsViewer(DATA) {
     document.querySelectorAll("[data-pref]").forEach(function (b) {
       b.setAttribute("aria-pressed", String(!!prefs[b.dataset.pref]));
     });
-    audio.playbackRate = prefs.rate;
     rateBtn.textContent = (prefs.rate % 1 ? String(prefs.rate) : prefs.rate.toFixed(1)) + "×";
     modeBtn.textContent = MODE_LABEL[prefs.mode];
     updateOpen();
@@ -641,26 +807,17 @@ function ytcardsViewer(DATA) {
     b.addEventListener("click", function () { togglePref(b.dataset.pref); });
   });
 
-  // ---- playback ----
-  // seg: 한 문장 재생 {i, gap, done}. 끝나면 gap초 쉬고 done을 부른다 (비교 듣기에서 씀).
-  // seg가 null이면 이어서 재생 중이거나 멈춘 상태
-  var seg = null;
-  var gapTimer = null;
-  var hold = -1; // 한 문장을 다 재생하고 멈췄을 때 강조를 유지할 문장 (끝의 여유에서 다음 문장으로 넘어가지 않게)
+  // ---- playback: 재생 규칙은 재생 목록(queue.js)이 정하고, 여기서는 화면에 그리고 오디오 이벤트를 넘긴다 ----
   var active = -1;
+  var queue = ytcardsQueue({
+    sentences: S, audio: audio, timers: window, mode: prefs.mode, rate: prefs.rate,
+    onActive: showActive, onPlayingChange: syncPlayIcon,
+  });
+  // recording.js가 쓰는 이름
+  function cur() { return queue.current(); }
+  function stopPlayback() { queue.stop(); }
 
-  function cur() { return Math.max(active, 0); }
-  function oneSentenceMode() { return prefs.mode === "one" || prefs.mode === "loop"; }
-  function indexAt(t) {
-    var lo = 0, hi = S.length - 1, ans = -1;
-    while (lo <= hi) {
-      var mid = (lo + hi) >> 1;
-      if (S[mid].start <= t + 0.05) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
-    }
-    return ans;
-  }
-  function setActive(i, scroll) {
-    if (i === active) return;
+  function showActive(i, scroll) {
     if (active >= 0) {
       sentEls[active].classList.remove("active");
       if (cardEls[active]) cardEls[active].classList.remove("active");
@@ -693,144 +850,46 @@ function ytcardsViewer(DATA) {
       if (cardEls[k]) cardEls[k].classList.toggle("ahead", ahead);
     });
   }
-  function waiting() { return gapTimer != null; }
-  function clearGap() {
-    if (gapTimer == null) return;
-    clearTimeout(gapTimer);
-    gapTimer = null;
-    syncPlayIcon();
-  }
-
-  // 문장 i 하나만 재생한다
-  function playSegment(i, scroll, gap, done) {
-    clearGap();
-    hold = -1;
-    seg = { i: i, gap: gap || 0, done: done || null };
-    audio.currentTime = S[i].start;
-    setActive(i, scroll);
-    audio.play();
-  }
-  function playContinuous(i, scroll) {
-    clearGap();
-    hold = -1;
-    seg = null;
-    audio.currentTime = S[i].start;
-    setActive(i, scroll);
-    audio.play();
-  }
-  // 재생 방식대로 문장 i부터 재생한다 (재생·이전·다음·문장 누르기 공통)
-  function playAt(i, scroll) {
-    i = Math.min(S.length - 1, Math.max(0, i));
-    if (oneSentenceMode()) playSegment(i, scroll);
-    else playContinuous(i, scroll);
-  }
-  function finishSegment() {
-    var s = seg;
-    if (!s.gap && !s.done && prefs.mode === "loop") {
-      audio.currentTime = S[s.i].start; // 한 문장 반복: 멈추지 않고 되감는다
-      return;
-    }
-    audio.pause();
-    if (s.gap) {
-      // 느리게 재생하면 쉬는 시간도 그만큼 늘린다
-      gapTimer = setTimeout(function () {
-        gapTimer = null;
-        endSegment(s);
-      }, s.gap * 1000 / prefs.rate);
-      syncPlayIcon();
-    } else {
-      endSegment(s);
-    }
-  }
-  function endSegment(s) {
-    syncPlayIcon();
-    if (seg !== s) return; // 그사이 다른 재생을 시작했으면 무시
-    hold = s.i;
-    seg = null;
-    if (s.done) s.done();
-  }
-  function stopPlayback() {
-    clearGap();
-    seg = null;
-    audio.pause();
-  }
-  function step(delta) {
-    playAt(cur() + delta, true);
-  }
-  // 가운데 버튼: 재생 중이면 멈추고, 멈춰 있으면 현재 문장을 재생 방식대로 재생한다.
-  // 문장 중간에서 멈췄으면 그 자리부터 이어서, 문장을 다 들은 뒤면 처음부터 다시 듣는다
-  function togglePlay() {
-    if (waiting()) {
-      stopPlayback();
-      return;
-    }
-    if (!audio.paused) {
-      audio.pause();
-      return;
-    }
-    var i = cur(), t = audio.currentTime;
-    if (t > S[i].start + 0.05 && t < S[i].end) {
-      seg = oneSentenceMode() ? (seg && seg.i === i ? seg : { i: i, gap: 0, done: null }) : null;
-      hold = -1;
-      audio.play();
-    } else {
-      playAt(i, true);
-    }
-  }
-  // 재생 중에 방식을 바꾸면 지금 문장부터 새 방식을 따른다
   function cycleMode() {
     prefs.mode = MODES[(MODES.indexOf(prefs.mode) + 1) % MODES.length];
-    if (!audio.paused && !(seg && seg.done)) {
-      seg = oneSentenceMode() ? { i: cur(), gap: 0, done: null } : null;
-    }
+    queue.setMode(prefs.mode);
     applyPrefs();
     savePrefs();
   }
   function cycleRate() {
     var i = RATES.indexOf(prefs.rate);
     prefs.rate = RATES[(i + 1) % RATES.length];
+    queue.setRate(prefs.rate);
     applyPrefs();
     savePrefs();
   }
 
-  function tick() {
-    if (seg && !audio.paused && audio.currentTime >= S[seg.i].end + TAIL) finishSegment();
+  function frame() {
+    queue.tick();
     var t = audio.currentTime;
-    var i = indexAt(t);
-    // 한 문장 재생은 끝의 여유(TAIL)에서 다음 문장으로 강조가 넘어가지 않게 한다
-    if (seg) i = seg.i;
-    else if (hold >= 0 && audio.paused) i = hold;
-    else hold = -1;
-    setActive(i, !audio.paused);
     progressEl.style.width = (audio.duration ? (t / audio.duration) * 100 : 0) + "%";
-    if (!audio.paused) requestAnimationFrame(tick);
+    if (!audio.paused) requestAnimationFrame(frame);
   }
-
-  // 쉬는 구간(gap)에는 오디오가 멈춰 있지만 재생 중으로 표시한다
   function syncPlayIcon() {
-    var on = !audio.paused || waiting();
+    var on = queue.isPlaying();
     playIcon.setAttribute("d", on ? PAUSE_PATH : PLAY_PATH);
     playBtn.setAttribute("aria-label", on ? "일시정지" : "재생");
   }
   audio.addEventListener("play", function () {
     syncPlayIcon();
-    requestAnimationFrame(tick);
+    requestAnimationFrame(frame);
   });
   audio.addEventListener("pause", function () {
     syncPlayIcon();
-    tick();
+    frame();
   });
-  // 마지막 문장은 TAIL 전에 오디오가 끝날 수 있다
-  audio.addEventListener("ended", function () {
-    if (seg) finishSegment();
-    else if (prefs.mode === "all") playContinuous(0, true);
-  });
-  audio.addEventListener("loadedmetadata", tick);
-  audio.addEventListener("seeked", function () { if (audio.paused) tick(); });
+  audio.addEventListener("ended", function () { queue.ended(); });
+  audio.addEventListener("loadedmetadata", frame);
+  audio.addEventListener("seeked", function () { if (audio.paused) frame(); });
 
-  playBtn.addEventListener("click", togglePlay);
-  document.getElementById("prev").addEventListener("click", function () { step(-1); });
-  document.getElementById("next").addEventListener("click", function () { step(1); });
+  playBtn.addEventListener("click", function () { queue.toggle(); });
+  document.getElementById("prev").addEventListener("click", function () { queue.step(-1); });
+  document.getElementById("next").addEventListener("click", function () { queue.step(1); });
   modeBtn.addEventListener("click", cycleMode);
   rateBtn.addEventListener("click", cycleRate);
 
@@ -844,7 +903,7 @@ function ytcardsViewer(DATA) {
     if (!swipe) return;
     var p = e.changedTouches[0];
     var dx = p.clientX - swipe.x, dy = p.clientY - swipe.y;
-    if (Math.abs(dx) > 50 && Math.abs(dy) < 40 && Date.now() - swipe.t < 600) step(dx < 0 ? 1 : -1);
+    if (Math.abs(dx) > 50 && Math.abs(dy) < 40 && Date.now() - swipe.t < 600) queue.step(dx < 0 ? 1 : -1);
     swipe = null;
   }, { passive: true });
 
@@ -872,13 +931,13 @@ function ytcardsViewer(DATA) {
     }
     var ts = t.closest("[data-play]");
     if (ts) {
-      playAt(Number(ts.dataset.play), false);
+      queue.playAt(Number(ts.dataset.play), false);
       return;
     }
     var sent = t.closest(".sent");
     if (sent) {
       var si = Number(sent.dataset.i);
-      playAt(si, false);
+      queue.playAt(si, false);
       showPeek(si);
       openSheet(si);
     }
@@ -900,9 +959,9 @@ function ytcardsViewer(DATA) {
     if (e.metaKey || e.ctrlKey || e.altKey || e.target.tagName === "INPUT") return;
     var handled = true;
     switch (e.key) {
-      case " ": togglePlay(); break;
-      case "ArrowLeft": step(-1); break;
-      case "ArrowRight": step(1); break;
+      case " ": queue.toggle(); break;
+      case "ArrowLeft": queue.step(-1); break;
+      case "ArrowRight": queue.step(1); break;
       case "r": case "R": cycleMode(); break;
       case "t": case "T": togglePref("showKo"); break;
       case "h": case "H": togglePref("hideAhead"); break;
@@ -938,7 +997,7 @@ function ytcardsViewer(DATA) {
 
   // ==== 문장별 녹음 ====
   // study.fill_template()이 template.html 스크립트 끝의 자리표시에 그대로 끼워 넣는 조각이다.
-  // 템플릿의 S, sentEls, prefs, cur(), playSegment(), stopPlayback() 등을 같은 스코프에서 쓴다.
+  // 템플릿의 S, sentEls, prefs, queue, cur(), stopPlayback() 등을 같은 스코프에서 쓴다.
   // 녹음·비교 대상은 현재 문장(cur)이다. 🎙을 누르는 동안 녹음하고, 떼면 저장한 뒤 바로 비교해 들려준다
 
   var msgEl = document.getElementById("toast");
@@ -1154,7 +1213,7 @@ function ytcardsViewer(DATA) {
       return;
     }
     stopRecording();
-    playSegment(i, false, COMPARE_PAUSE, function () { playMine(id); });
+    queue.playSentence(i, { pauseAfter: COMPARE_PAUSE, then: function () { playMine(id); } });
   }
   // 원본을 재생하면 내 녹음 재생과 녹음을 멈춘다 (스피커 소리가 녹음되지 않게)
   audio.addEventListener("play", function () {
