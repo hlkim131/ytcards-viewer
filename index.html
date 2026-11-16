@@ -683,26 +683,27 @@ function ytcardsRecording(o) {
   };
 }
 
-// 브라우저 adapter. url은 영상 주소, recAudio는 내 녹음을 재생할 <audio>
-function ytcardsRecordingBrowser(url, recAudio) {
+// 녹음 저장소: IndexedDB에 "<영상 주소>#<문장 id>" 키로 둔다. 학습 화면과 웹앱(영상 목록)이 함께 쓴다.
+// IndexedDB를 못 쓰면 읽기는 비어 있고, save는 false를 돌려준다
+function ytcardsRecordingStore(url) {
   "use strict";
-  // 녹음은 IndexedDB에 "<영상 주소>#<문장 id>" 키로 둔다 (웹앱 webapp_app.js도 같은 저장소를 쓴다).
-  // IndexedDB를 못 쓰면 save가 false를 돌려준다
   var REC_DB = "ytcards-recordings", REC_STORE = "rec";
   var prefix = url + "#";
-
-  var dbReady = new Promise(function (resolve) {
-    try {
-      var req = indexedDB.open(REC_DB, 1);
-      req.onupgradeneeded = function () { req.result.createObjectStore(REC_STORE); };
-      req.onsuccess = function () { resolve(req.result); };
-      req.onerror = function () { resolve(null); };
-    } catch (e) {
-      resolve(null);
-    }
-  });
+  // 영상마다 저장소를 만들어도 DB는 한 번만 연다
+  if (!ytcardsRecordingStore.db) {
+    ytcardsRecordingStore.db = new Promise(function (resolve) {
+      try {
+        var req = indexedDB.open(REC_DB, 1);
+        req.onupgradeneeded = function () { req.result.createObjectStore(REC_STORE); };
+        req.onsuccess = function () { resolve(req.result); };
+        req.onerror = function () { resolve(null); };
+      } catch (e) {
+        resolve(null);
+      }
+    });
+  }
   function dbDo(mode, fn) {
-    return dbReady.then(function (db) {
+    return ytcardsRecordingStore.db.then(function (db) {
       if (!db) return null;
       return new Promise(function (resolve, reject) {
         var tx = db.transaction(REC_STORE, mode);
@@ -712,9 +713,9 @@ function ytcardsRecordingBrowser(url, recAudio) {
       });
     }).catch(function () { return null; });
   }
-  function thisVideo() { return IDBKeyRange.bound(prefix, prefix + "￿"); }
+  function thisVideo() { return IDBKeyRange.bound(prefix, prefix + "\uffff"); }
 
-  var store = {
+  return {
     loadAll: function () {
       return dbDo("readonly", function (s) { return s.getAll(thisVideo()); }).then(function (blobs) {
         return dbDo("readonly", function (s) { return s.getAllKeys(thisVideo()); }).then(function (keys) {
@@ -729,7 +730,17 @@ function ytcardsRecordingBrowser(url, recAudio) {
     },
     remove: function (id) { return dbDo("readwrite", function (s) { return s.delete(prefix + id); }); },
     clear: function () { return dbDo("readwrite", function (s) { return s.delete(thisVideo()); }); },
+    // 이 영상의 녹음 수 (못 읽으면 0)
+    count: function () {
+      return dbDo("readonly", function (s) { return s.count(thisVideo()); }).then(function (n) { return n || 0; });
+    },
   };
+}
+
+// 브라우저 adapter. url은 영상 주소, recAudio는 내 녹음을 재생할 <audio>
+function ytcardsRecordingBrowser(url, recAudio) {
+  "use strict";
+  var store = ytcardsRecordingStore(url);
 
   function micError(e) {
     if (!navigator.mediaDevices || !window.MediaRecorder) {
@@ -1340,17 +1351,45 @@ function ytcardsViewer(DATA) {
   applyPrefs();
   syncHeights();
 }
+// ==== 학습 페이지(study.html) 읽기 ====
+// webapp.py가 웹앱 스크립트 앞에 끼워 넣는다. study.html을 쓰는 쪽은 study.py의 render()다.
+// 이미 휴대폰에 옮겨 둔 예전 study.html도 계속 읽어야 하므로, 아래 두 표식을 바꾸면 예전 파일을 못 읽는다
+// (tests/viewer/test_study_page.py가 study.py로 만든 파일과 예전 파일 모양을 함께 확인한다).
+//
+// html: study.html 내용, maxFormat: 읽을 수 있는 가장 높은 학습 데이터 형식 버전
+// 돌려주는 값: {data: 학습 데이터, audioUri: 오디오 data URI}. 읽을 수 없으면 안내 문구를 담은 Error를 던진다
+function ytcardsReadStudy(html, maxFormat) {
+  "use strict";
+  var m = html.match(/<script id="data" type="application\/json">([\s\S]*?)<\/script>/);
+  var a = html.match(/<audio id="audio"[^>]*\ssrc="(data:audio\/[^"]+)"/);
+  if (!m || !a) throw new Error("학습 페이지(study.html)가 아닙니다");
+  var data;
+  try {
+    data = JSON.parse(m[1]);
+  } catch (e) {
+    throw new Error("대본을 읽지 못했습니다");
+  }
+  if (!data || !data.url || !Array.isArray(data.sentences)) {
+    throw new Error("대본 형식이 맞지 않습니다");
+  }
+  // format이 없는 예전 study.html은 1로 본다
+  if ((data.format || 1) > maxFormat) {
+    throw new Error("앱보다 새 버전의 study.html입니다. 앱을 다시 열어 새 버전으로 바꾼 뒤 가져오세요");
+  }
+  return { data: data, audioUri: a[1] };
+}
+
 // ==== 웹앱: 영상 목록·가져오기 ====
-// webapp.py가 학습 화면 템플릿 스크립트 끝(ytcardsViewer 정의 뒤)에 끼워 넣는다.
+// webapp.py가 학습 화면 템플릿 스크립트 끝(ytcardsViewer 정의 뒤)에 study_page.js와 함께 끼워 넣는다.
+// 녹음 저장소는 recording.js의 ytcardsRecordingStore를 학습 화면과 함께 쓴다.
 // 가져온 study.html의 대본·오디오는 이 브라우저의 IndexedDB에만 저장되고 어디로도 전송되지 않는다.
 // 주소에 ?v=<영상 id>가 있으면 그 영상의 학습 화면을, 없으면 목록을 보여 준다.
 // 영상을 바꿀 때는 페이지를 새로 연다 (학습 화면이 문서 전체에 이벤트를 걸기 때문)
 (function () {
   "use strict";
   var DB_NAME = "ytcards-app";
-  // 읽을 수 있는 학습 데이터 형식 버전 (study.py의 FORMAT_VERSION). format이 없는 예전 study.html은 1로 본다
+  // 읽을 수 있는 학습 데이터 형식 버전. 빌드할 때 study.py의 FORMAT_VERSION으로 채운다
   var MAX_FORMAT = 1;
-  var REC_DB = "ytcards-recordings", REC_STORE = "rec"; // recording.js와 같은 저장소
 
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
 
@@ -1367,7 +1406,6 @@ function ytcardsViewer(DATA) {
     db.createObjectStore("videos", { keyPath: "id" });
     db.createObjectStore("audio");
   });
-  var recDb = openDb(REC_DB, function (db) { db.createObjectStore(REC_STORE); });
 
   // fn(tx)이 돌려준 요청의 결과로 끝난다
   function run(dbp, stores, mode, fn) {
@@ -1380,7 +1418,6 @@ function ytcardsViewer(DATA) {
       });
     });
   }
-  function recRange(url) { return IDBKeyRange.bound(url + "#", url + "#￿"); }
   function videoId(data) { return data.url.split("/").pop(); }
   function fmtDur(t) {
     t = Math.round(t || 0);
@@ -1434,9 +1471,7 @@ function ytcardsViewer(DATA) {
     run(appDb, "videos", "readonly", function (t) { return t.objectStore("videos").getAll(); }).then(function (videos) {
       videos.sort(function (a, b) { return (b.openedAt || b.addedAt) - (a.openedAt || a.addedAt); });
       return Promise.all(videos.map(function (v) {
-        return run(recDb, REC_STORE, "readonly", function (t) {
-          return t.objectStore(REC_STORE).count(recRange(v.data.url));
-        });
+        return ytcardsRecordingStore(v.data.url).count();
       })).then(function (counts) {
         listEl.textContent = "";
         videos.forEach(function (v, k) {
@@ -1482,25 +1517,11 @@ function ytcardsViewer(DATA) {
     });
   }
 
-  // study.html에서 대본(JSON)과 오디오(data URI)를 꺼낸다
+  // study.html에서 학습 데이터와 오디오를 꺼낸다 (읽기 규칙은 study_page.js)
   function parseStudy(text) {
-    var m = text.match(/<script id="data" type="application\/json">([\s\S]*?)<\/script>/);
-    var a = text.match(/<audio id="audio"[^>]*\ssrc="(data:audio\/[^"]+)"/);
-    if (!m || !a) return Promise.reject(new Error("학습 페이지(study.html)가 아닙니다"));
-    var data;
-    try {
-      data = JSON.parse(m[1]);
-    } catch (e) {
-      return Promise.reject(new Error("대본을 읽지 못했습니다"));
-    }
-    if (!data || !data.url || !Array.isArray(data.sentences)) {
-      return Promise.reject(new Error("대본 형식이 맞지 않습니다"));
-    }
-    if ((data.format || 1) > MAX_FORMAT) {
-      return Promise.reject(new Error("앱보다 새 버전의 study.html입니다. 앱을 다시 열어 새 버전으로 바꾼 뒤 가져오세요"));
-    }
-    return fetch(a[1]).then(function (r) { return r.blob(); }).then(function (blob) {
-      return { data: data, blob: blob };
+    var r = ytcardsReadStudy(text, MAX_FORMAT);
+    return fetch(r.audioUri).then(function (res) { return res.blob(); }).then(function (blob) {
+      return { data: r.data, blob: blob };
     });
   }
 
@@ -1539,7 +1560,7 @@ function ytcardsViewer(DATA) {
       t.objectStore("videos").delete(id);
       t.objectStore("audio").delete(id);
     }).then(function () {
-      return run(recDb, REC_STORE, "readwrite", function (t) { return t.objectStore(REC_STORE).delete(recRange(url)); });
+      return ytcardsRecordingStore(url).clear();
     }).then(function () {
       msgEl.textContent = "‘" + title + "’을 지웠습니다";
       renderList();
