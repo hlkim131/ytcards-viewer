@@ -1,6 +1,6 @@
-// 웹앱 서비스 워커: 화면 파일을 미리 저장해 인터넷 없이도 열리게 한다 (webapp.py가 86936df7c60e·["./", "icon-192.png", "icon-512.png", "index.html", "manifest.webmanifest"]를 채움).
+// 웹앱 서비스 워커: 화면 파일을 미리 저장해 인터넷 없이도 열리게 한다 (webapp.py가 아래 캐시 버전과 파일 목록을 채움).
 // 화면 파일이 바뀌면 버전이 바뀌어 새 캐시를 받고, 다음에 앱을 열 때 새 화면이 쓰인다
-var CACHE = "ytcards-86936df7c60e";
+var CACHE = "ytcards-5d9abac7abd1";
 var FILES = ["./", "icon-192.png", "icon-512.png", "index.html", "manifest.webmanifest"];
 
 self.addEventListener("install", function (e) {

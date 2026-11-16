@@ -937,7 +937,7 @@ function ytcardsViewer(DATA) {
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(scheduleLayout);
 
   // ==== 문장별 녹음 ====
-  // viewer.render()가 viewer_template.html 스크립트 끝의 자리표시에 그대로 끼워 넣는 조각이다.
+  // study.fill_template()이 template.html 스크립트 끝의 자리표시에 그대로 끼워 넣는 조각이다.
   // 템플릿의 S, sentEls, prefs, cur(), playSegment(), stopPlayback() 등을 같은 스코프에서 쓴다.
   // 녹음·비교 대상은 현재 문장(cur)이다. 🎙을 누르는 동안 녹음하고, 떼면 저장한 뒤 바로 비교해 들려준다
 
@@ -1020,7 +1020,10 @@ function ytcardsViewer(DATA) {
   function openMic() {
     if (micStream) return Promise.resolve(micStream);
     if (!navigator.mediaDevices || !window.MediaRecorder) return Promise.reject(null);
-    return navigator.mediaDevices.getUserMedia({ audio: true }).then(function (s) {
+    // 통화용 음성 처리를 끈다. 켜 두면 Android Chrome이 통화 모드로 바뀌어 볼륨 버튼이 통화 음량을 맡고
+    // (최솟값이 0이 아님) 소리를 끌 수 없다. 녹음 중에는 재생을 멈추므로 에코 제거도 필요 없다
+    var constraints = { audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } };
+    return navigator.mediaDevices.getUserMedia(constraints).then(function (s) {
       micStream = s;
       return s;
     });
@@ -1204,7 +1207,9 @@ function ytcardsViewer(DATA) {
 (function () {
   "use strict";
   var DB_NAME = "ytcards-app";
-  var REC_DB = "ytcards-recordings", REC_STORE = "rec"; // viewer_recording.js와 같은 저장소
+  // 읽을 수 있는 학습 데이터 형식 버전 (study.py의 FORMAT_VERSION). format이 없는 예전 study.html은 1로 본다
+  var MAX_FORMAT = 1;
+  var REC_DB = "ytcards-recordings", REC_STORE = "rec"; // recording.js와 같은 저장소
 
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
 
@@ -1349,6 +1354,9 @@ function ytcardsViewer(DATA) {
     }
     if (!data || !data.url || !Array.isArray(data.sentences)) {
       return Promise.reject(new Error("대본 형식이 맞지 않습니다"));
+    }
+    if ((data.format || 1) > MAX_FORMAT) {
+      return Promise.reject(new Error("앱보다 새 버전의 study.html입니다. 앱을 다시 열어 새 버전으로 바꾼 뒤 가져오세요"));
     }
     return fetch(a[1]).then(function (r) { return r.blob(); }).then(function (blob) {
       return { data: data, blob: blob };
