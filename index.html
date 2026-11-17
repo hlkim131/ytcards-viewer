@@ -1401,23 +1401,27 @@ function ytcardsViewer(DATA) {
 function ytcardsReadStudy(html, maxFormat) {
   "use strict";
   var m = html.match(/<script id="data" type="application\/json">([\s\S]*?)<\/script>/);
-  // 지금 파일은 <video id="media" ... src="data:video/mp4;...">, 예전 파일은 <audio id="audio" ... src="data:audio/mpeg;...">
-  var a = html.match(/<video id="media"[^>]*\ssrc="(data:video\/[^"]+)"/) ||
-    html.match(/<audio id="audio"[^>]*\ssrc="(data:audio\/[^"]+)"/);
-  if (!m || !a) throw new Error("학습 페이지(study.html)가 아닙니다");
+  if (!m) throw new Error("학습 페이지(study.html)가 아닙니다");
   var data;
   try {
     data = JSON.parse(m[1]);
   } catch (e) {
     throw new Error("대본을 읽지 못했습니다");
   }
-  if (!data || !data.url || !Array.isArray(data.sentences)) {
+  // 웹앱 index.html처럼 대본 자리가 비어 있으면(null) 학습 페이지가 아니다
+  if (!data) throw new Error("학습 페이지(study.html)가 아닙니다");
+  if (!data.url || !Array.isArray(data.sentences)) {
     throw new Error("대본 형식이 맞지 않습니다");
   }
   // format이 없는 예전 study.html은 1로 본다
   if ((data.format || 1) > maxFormat) {
     throw new Error("앱보다 새 버전의 study.html입니다. 앱을 다시 열어 새 버전으로 바꾼 뒤 가져오세요");
   }
+  // 지금 파일은 <video id="media" ... src="data:video/mp4;...">, 예전 파일은 <audio id="audio" ... src="data:audio/mpeg;...">
+  var a = html.match(/<video id="media"[^>]*\ssrc="(data:video\/[^"]+)"/) ||
+    html.match(/<audio id="audio"[^>]*\ssrc="(data:audio\/[^"]+)"/);
+  // 대본은 맞는데 영상·오디오 자리를 못 찾으면 이 앱이 모르는 새 모양의 study.html이다
+  if (!a) throw new Error("이 앱이 읽지 못하는 study.html입니다. 앱을 완전히 닫았다가 다시 열어 새 버전으로 바꾼 뒤 가져오세요");
   return { data: data, mediaUri: a[1] };
 }
 
