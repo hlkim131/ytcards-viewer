@@ -140,6 +140,27 @@ h1 { font-size: 1rem; line-height: 1.4; margin: 0; min-width: 0; white-space: no
 @media (min-width: 900px) { .video-box video { max-height: 38vh; } }
 /* 영상을 끄거나, 소리만 든 예전 파일이면 자리를 비운다 (재생은 그대로) */
 body:not(.show-video) .video-box, .no-video .video-box, .no-video [data-pref="video"] { display: none; }
+.video-frame { position: relative; line-height: 0; }
+/* 크게/작게: 세로 영상에서만 (가로 영상은 이미 폭을 다 쓴다) */
+.big-btn {
+  position: absolute; top: 6px; right: 6px;
+  border: 0; border-radius: 999px; padding: 3px 10px;
+  background: rgba(0, 0, 0, 0.55); color: #fff;
+  font-size: 0.75rem; line-height: 1.5; cursor: pointer;
+}
+body:not(.portrait) .big-btn { display: none; }
+/* 크게 보기: 세로 영상을 키우고, 대본 목록 대신 현재 문장을 영상 바로 아래에 둔다 (영상 위에 겹치지 않음).
+   영상 높이 = 화면 − 컨트롤러 − 제목 줄·현재 문장 자리 */
+.video-box { flex-direction: column; align-items: center; }
+.now { display: none; }
+.big .video-box video { max-height: calc(100vh - var(--player-h, 210px) - 170px); }
+@supports (height: 100dvh) {
+  .big .video-box video { max-height: calc(100dvh - var(--player-h, 210px) - 170px); }
+}
+.big .page { display: none; }
+.big .now { display: block; align-self: stretch; padding: 8px 0 4px; }
+.now-en { margin: 0; font-size: 1.05rem; line-height: 1.5; cursor: pointer; }
+.now-ko { margin: 2px 0 0; color: var(--muted); font-size: 0.88rem; line-height: 1.5; }
 
 /* ---- layout: script | notes ---- */
 .page { display: grid; grid-template-columns: minmax(0, 1fr); padding: 10px 0 16px; }
@@ -320,7 +341,12 @@ body:not(.show-notes) .notes-only { display: none !important; }
   </details>
   </div>
   <div class="video-box" id="video-box">
-    <video id="media" preload="auto" playsinline src=""></video>
+    <div class="video-frame">
+      <video id="media" preload="auto" playsinline src=""></video>
+      <button class="big-btn" id="big-btn" title="크게 보기 (B)"></button>
+    </div>
+    <!-- 크게 보기에서 대본 목록 대신 보이는 현재 문장 -->
+    <div class="now" id="now" aria-live="polite"></div>
   </div>
   <div class="page">
     <main id="script"></main>
@@ -359,7 +385,7 @@ body:not(.show-notes) .notes-only { display: none !important; }
       <button class="pad small" id="cmp-btn" disabled title="원본 → 내 녹음 (C)">비교</button>
       <button class="pad small" id="rec-del" disabled aria-label="녹음 지우기" title="녹음 지우기">🗑</button>
     </div>
-    <p class="keys">Space 재생/멈춤 · ←/→ 이전/다음 문장 · R 재생 방식 · T 번역 · H 다음 문장 가리기 · V 누르는 동안 녹음 · C 비교 · 컨트롤러를 좌우로 밀어도 이동</p>
+    <p class="keys">Space 재생/멈춤 · ←/→ 이전/다음 문장 · R 재생 방식 · T 번역 · H 다음 문장 가리기 · B 세로 영상 크게 · V 누르는 동안 녹음 · C 비교 · 컨트롤러를 좌우로 밀어도 이동</p>
   </div>
 </div>
 
@@ -856,6 +882,8 @@ function ytcardsViewer(DATA) {
   // 원본 영상 (소리만 든 예전 파일이면 화면 없이 소리만)
   var media = document.getElementById("media");
   var videoBox = document.getElementById("video-box");
+  var bigBtn = document.getElementById("big-btn");
+  var nowEl = document.getElementById("now");
   var script = document.getElementById("script");
   var notesCol = document.getElementById("notes");
   var sheet = document.getElementById("sheet");
@@ -874,7 +902,7 @@ function ytcardsViewer(DATA) {
   // 기본값을 바꾸면 키 버전을 올린다 (예전에 저장한 설정이 새 기본값을 덮지 않게)
   var PREF_KEY = "ytcards-viewer-prefs-v2";
   var prefs = {
-    showKo: false, allKo: true, notes: false, expandAll: false, follow: true, rate: 1.0, hideAhead: false, video: true,
+    showKo: false, allKo: true, notes: false, expandAll: false, follow: true, rate: 1.0, hideAhead: false, video: true, bigVideo: false,
     mode: "one",
   };
   try {
@@ -1120,8 +1148,37 @@ function ytcardsViewer(DATA) {
     });
     rateBtn.textContent = (prefs.rate % 1 ? String(prefs.rate) : prefs.rate.toFixed(1)) + "×";
     modeBtn.textContent = MODE_LABEL[prefs.mode];
+    applyBig();
     updateOpen();
     syncHeights();
+  }
+  // 크게 보기는 세로 영상을 보이고 있을 때만 (가로 영상·영상 끔·소리만 든 파일이면 설정은 두고 적용하지 않는다)
+  function applyBig() {
+    var body = document.body;
+    var portrait = media.videoHeight > media.videoWidth;
+    body.classList.toggle("portrait", portrait);
+    body.classList.toggle("big", !!prefs.bigVideo && portrait && !!prefs.video);
+    bigBtn.textContent = prefs.bigVideo ? "작게" : "크게";
+    bigBtn.setAttribute("aria-pressed", String(!!prefs.bigVideo));
+  }
+  function toggleBig() {
+    if (!document.body.classList.contains("portrait") || !prefs.video) return;
+    prefs.bigVideo = !prefs.bigVideo;
+    closeSheet();
+    peek.hidden = true;
+    applyPrefs();
+    savePrefs();
+    // 대본 목록으로 돌아오면 현재 문장을 보이게
+    if (!prefs.bigVideo && active >= 0) sentEls[active].scrollIntoView({ block: "center" });
+  }
+  // 크게 보기의 현재 문장. 번역은 대본과 같이 `번역` 설정을 따르고(.ko), 영어를 누르면 그 문장을 재생한다
+  function renderNow() {
+    var i = cur(), s = S[i];
+    nowEl.textContent = "";
+    var en = el("p", "now-en", english(s));
+    en.dataset.play = i;
+    nowEl.appendChild(en);
+    if (s.korean) nowEl.appendChild(el("p", "now-ko ko", s.korean));
   }
   function togglePref(name) {
     prefs[name] = !prefs[name];
@@ -1193,6 +1250,7 @@ function ytcardsViewer(DATA) {
     paintAhead();
     posEl.textContent = (cur() + 1) + " / " + S.length;
     renderRec();
+    renderNow();
     if (!peek.hidden && Number(peek.dataset.i) !== i) peek.hidden = true;
     if (i >= 0) {
       sentEls[i].classList.add("active");
@@ -1201,7 +1259,7 @@ function ytcardsViewer(DATA) {
         if (wantsDetail(i)) renderSheet(i);
         else closeSheet();
       }
-      if (prefs.follow && scroll) {
+      if (prefs.follow && scroll && !document.body.classList.contains("big")) {
         // 모바일 시트가 열려 있으면 화면 아래쪽이 가려지므로 위쪽에 맞춘다
         sentEls[i].scrollIntoView({ block: sheetOpen ? "start" : "center", behavior: "smooth" });
       }
@@ -1255,6 +1313,7 @@ function ytcardsViewer(DATA) {
   function onMetadata() {
     // 웹앱에 예전에 가져온 파일은 소리만 들어 있다
     document.body.classList.toggle("no-video", !media.videoWidth);
+    applyBig();
     syncHeights();
     frame();
   }
@@ -1262,6 +1321,7 @@ function ytcardsViewer(DATA) {
   if (media.readyState >= 1) onMetadata();
   media.addEventListener("seeked", function () { if (media.paused) frame(); });
   media.addEventListener("click", function () { queue.toggle(); });
+  bigBtn.addEventListener("click", toggleBig);
 
   playBtn.addEventListener("click", function () { queue.toggle(); });
   document.getElementById("prev").addEventListener("click", function () { queue.step(-1); });
@@ -1344,6 +1404,7 @@ function ytcardsViewer(DATA) {
       case "r": case "R": cycleMode(); break;
       case "t": case "T": togglePref("showKo"); break;
       case "h": case "H": togglePref("hideAhead"); break;
+      case "b": case "B": toggleBig(); break;
       case "v": case "V": if (!e.repeat) recording.holdStart(); break;
       case "c": case "C": recording.compare(); break;
       case "Escape": closeSheet(); peek.hidden = true; break;
@@ -1387,6 +1448,7 @@ function ytcardsViewer(DATA) {
   recBtn.addEventListener("contextmenu", function (e) { e.preventDefault(); });
 
   renderRec();
+  renderNow();
   paintAhead();
   applyPrefs();
   syncHeights();
