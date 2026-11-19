@@ -184,13 +184,21 @@ body:not(.show-notes) .notes-only { display: none !important; }
 .sent.hover { background: var(--mark); }
 .sent.active { background: var(--active-bg); box-shadow: 0 0 0 2px var(--active-bg); }
 .sent:hover { text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 4px; }
-.ko-line { display: none; }
-.all-ko .sent { display: block; margin-top: 4px; }
-.all-ko .para br { display: none; }
-.all-ko .ko-line { display: block; color: var(--muted); font-size: 0.88rem; line-height: 1.5; margin-bottom: 2px; }
+/* 번역: `번역`을 켜면 문장마다 아래 줄에, 끄면 원문만 (지금 문장만 `뜻`으로 펼침) */
+.ko-line { display: none; color: var(--muted); font-size: 0.88rem; line-height: 1.5; margin-bottom: 2px; }
+.show-ko .sent { display: block; margin-top: 4px; }
+.show-ko .para br { display: none; }
+.show-ko .ko-line, .ko-line.revealed { display: block; }
+.meaning {
+  border: 1px solid var(--line); background: var(--bg); color: var(--muted);
+  border-radius: 999px; font-size: 0.75rem; line-height: 1.5; padding: 1px 10px;
+  margin-left: 6px; vertical-align: 2px; cursor: pointer;
+}
+.meaning[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+.show-ko .meaning { display: none; }
 
 /* ---- note cards (desktop margin notes) ---- */
-.note-card, .peek {
+.note-card {
   position: absolute; left: 0; right: 0;
   background: var(--surface);
   border: 1px solid var(--line);
@@ -203,8 +211,6 @@ body:not(.show-notes) .notes-only { display: none !important; }
 }
 .note-card.hover { border-color: var(--active-line); border-left-color: var(--active-line); }
 .note-card.active { border-left-color: var(--active-line); box-shadow: var(--shadow-lg); }
-.peek { z-index: 5; border-left-color: var(--muted); box-shadow: var(--shadow-lg); transition: none; }
-.peek[hidden] { display: none; }
 .nc-head { display: flex; align-items: baseline; gap: 8px; }
 .ts {
   border: 0; background: none; padding: 0;
@@ -213,7 +219,8 @@ body:not(.show-notes) .notes-only { display: none !important; }
 .kv { font-weight: 600; flex: 1; min-width: 0; }
 .note-card:not(.open) .kv { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ko { margin: 2px 0 0; color: var(--muted); }
-.hide-ko .ko:not(.revealed) { filter: blur(6px); cursor: pointer; user-select: none; }
+/* `번역`을 끄면 번역(대본·해설 카드·시트·크게 보기)을 숨기고, `뜻`을 누른 지금 문장 것만 보인다 */
+body:not(.show-ko) .ko:not(.revealed) { display: none; }
 /* 다음 문장 가리기: 현재 문장 뒤의 영어 문장(과 해설 카드)을 흐리게 */
 .hide-ahead .sent.ahead, .hide-ahead .note-card.ahead { filter: blur(6px); user-select: none; }
 .asr { margin: 4px 0 0; font-size: 0.78rem; color: var(--muted); }
@@ -364,7 +371,6 @@ body:not(.show-notes) .notes-only { display: none !important; }
     <!-- 가끔 바꾸는 보기 설정 (자주 쓰는 것은 아래 컨트롤러에) -->
     <div class="info-tools" role="group" aria-label="보기 설정">
       <button class="chip" data-pref="video" aria-pressed="true">영상</button>
-      <button class="chip" data-pref="allKo" aria-pressed="true">전체 번역</button>
       <button class="chip" data-pref="notes" aria-pressed="false">해설</button>
       <button class="chip notes-only" data-pref="expandAll" aria-pressed="false">해설 펼치기</button>
       <button class="chip" data-pref="follow" aria-pressed="true">자동 스크롤</button>
@@ -417,7 +423,7 @@ body:not(.show-notes) .notes-only { display: none !important; }
       <button class="pad small" id="cmp-btn" disabled title="원본 → 내 녹음 (C)">비교</button>
       <button class="pad small" id="rec-del" disabled aria-label="녹음 지우기" title="녹음 지우기">🗑</button>
     </div>
-    <p class="keys">Space 재생/멈춤 · ←/→ 이전/다음 문장 · R 재생 방식 · T 번역 · H 다음 문장 가리기 · B 세로 영상 크게 · V 누르는 동안 녹음 · C 비교 · 컨트롤러를 좌우로 밀어도 이동</p>
+    <p class="keys">Space 재생/멈춤 · ←/→ 이전/다음 문장 · R 재생 방식 · T 번역 · K 지금 문장 뜻 · H 다음 문장 가리기 · B 세로 영상 크게 · V 누르는 동안 녹음 · C 비교 · 컨트롤러를 좌우로 밀어도 이동</p>
   </div>
 </div>
 
@@ -936,7 +942,7 @@ function ytcardsViewer(DATA) {
   // 기본값을 바꾸면 키 버전을 올린다 (예전에 저장한 설정이 새 기본값을 덮지 않게)
   var PREF_KEY = "ytcards-viewer-prefs-v2";
   var prefs = {
-    showKo: false, allKo: true, notes: false, expandAll: false, follow: true, rate: 1.0, hideAhead: false, video: true, bigVideo: false,
+    showKo: false, notes: false, expandAll: false, follow: true, rate: 1.0, hideAhead: false, video: true, bigVideo: false,
     mode: "one",
   };
   try {
@@ -963,8 +969,8 @@ function ytcardsViewer(DATA) {
     return e;
   }
   function english(s) { return s.corrected || s.text; }
-  // 문장을 눌렀을 때 시트·옆 번역을 띄울지: 해설이 있거나, 대본에 번역이 안 보일 때만
-  function wantsDetail(i) { return (prefs.notes && !!S[i].card) || !prefs.allKo; }
+  // 문장을 눌렀을 때 휴대폰 하단 시트를 띄울지: 해설을 켰고 해설이 있는 문장일 때만
+  function wantsDetail(i) { return prefs.notes && !!S[i].card; }
   function tsButton(i) {
     var b = el("button", "ts", fmt(S[i].start));
     b.dataset.play = i;
@@ -1025,6 +1031,7 @@ function ytcardsViewer(DATA) {
       p.appendChild(span);
       if (s.korean) {
         var ko = el("span", "ko-line ko", s.korean);
+        ko.dataset.ko = i;
         p.appendChild(ko);
       }
       if (k < idx.length - 1) {
@@ -1053,15 +1060,35 @@ function ytcardsViewer(DATA) {
       head.appendChild(more);
     }
     card.appendChild(head);
-    if (s.korean) card.appendChild(el("p", "ko", s.korean));
+    if (s.korean) card.appendChild(koEl("p", "ko", i));
     if (s.corrected) card.appendChild(el("p", "asr", "음성 인식 원문: " + s.text));
     if (s.notes.length) card.appendChild(notesList(s));
     notesCol.appendChild(card);
     cardEls[i] = card;
   });
-  var peek = el("aside", "peek");
-  peek.hidden = true;
-  notesCol.appendChild(peek);
+  // 지금 문장의 번역만 펼치는 `뜻` 버튼. 대본에서는 지금 문장 바로 뒤로 옮겨 다닌다
+  var koShown = -1; // `뜻`으로 펼친 문장 (지금 문장이 바뀌면 다시 접힌다)
+  var meaningBtn = meaningButton();
+  function meaningButton() {
+    var b = el("button", "meaning", "뜻");
+    b.title = "이 문장 뜻 (K)";
+    return b;
+  }
+  function paintKo() {
+    document.querySelectorAll(".ko.revealed").forEach(function (k) { k.classList.remove("revealed"); });
+    if (koShown >= 0) {
+      document.querySelectorAll('.ko[data-ko="' + koShown + '"]').forEach(function (k) { k.classList.add("revealed"); });
+    }
+    document.querySelectorAll(".meaning").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(Number(b.dataset.meaning) === koShown));
+    });
+  }
+  function toggleMeaning(i) {
+    if (!(i >= 0) || !S[i].korean) return;
+    koShown = koShown === i ? -1 : i;
+    paintKo();
+    scheduleLayout();
+  }
 
   function updateOpen() {
     cardIdx.forEach(function (i) {
@@ -1112,24 +1139,9 @@ function ytcardsViewer(DATA) {
     cardIdx.forEach(function (i, k) { cardEls[i].style.top = pos[k] + "px"; });
     var last = want.length - 1;
     notesCol.style.minHeight = (pos[last] + h[last]) + "px";
-    if (!peek.hidden) peek.style.top = (sentTop(Number(peek.dataset.i)) - 6) + "px";
   }
 
-  // ---- detail views: desktop peek (해설 없는 문장의 번역) / mobile sheet ----
-  function showPeek(i) {
-    if (i == null || (prefs.notes && S[i].card) || prefs.allKo || !wide.matches) {
-      peek.hidden = true;
-      return;
-    }
-    var s = S[i];
-    peek.textContent = "";
-    peek.dataset.i = i;
-    peek.appendChild(tsButton(i));
-    peek.appendChild(el("p", "ko", s.korean || "(번역 없음)"));
-    if (s.corrected) peek.appendChild(el("p", "asr", "음성 인식 원문: " + s.text));
-    peek.hidden = false;
-    peek.style.top = (sentTop(i) - 6) + "px";
-  }
+  // ---- detail view: mobile sheet (해설) ----
   var sheetOpen = false;
   function renderSheet(i) {
     var s = S[i];
@@ -1144,9 +1156,10 @@ function ytcardsViewer(DATA) {
     sheetBody.appendChild(head);
     sheetBody.appendChild(el("p", "sheet-en", english(s)));
     if (s.corrected) sheetBody.appendChild(el("p", "asr", "음성 인식 원문: " + s.text));
-    if (s.korean) sheetBody.appendChild(el("p", "ko", s.korean));
+    if (s.korean) sheetBody.appendChild(koEl("p", "ko", i));
     if (prefs.notes && s.card && s.notes.length) sheetBody.appendChild(notesList(s));
     sheet.scrollTop = 0;
+    paintKo();
   }
   function openSheet(i) {
     if (wide.matches) return;
@@ -1176,11 +1189,9 @@ function ytcardsViewer(DATA) {
 
   // ---- toolbar toggles ----
   // 해설(형광펜·해설 칸·시트의 해설)은 show-notes일 때만 보인다
-  var CLASS_FOR = { allKo: "all-ko", notes: "show-notes", hideAhead: "hide-ahead", video: "show-video" };
+  var CLASS_FOR = { showKo: "show-ko", notes: "show-notes", hideAhead: "hide-ahead", video: "show-video" };
   function applyPrefs() {
     for (var k in CLASS_FOR) document.body.classList.toggle(CLASS_FOR[k], !!prefs[k]);
-    // 번역을 켜지 않으면 번역을 흐리게 가리고, 누른 번역만 보인다
-    document.body.classList.toggle("hide-ko", !prefs.showKo);
     document.querySelectorAll("[data-pref]").forEach(function (b) {
       b.setAttribute("aria-pressed", String(!!prefs[b.dataset.pref]));
     });
@@ -1203,30 +1214,35 @@ function ytcardsViewer(DATA) {
     if (!document.body.classList.contains("portrait") || !prefs.video || sideBySide.matches) return;
     prefs.bigVideo = !prefs.bigVideo;
     closeSheet();
-    peek.hidden = true;
     applyPrefs();
     savePrefs();
     // 대본 목록으로 돌아오면 현재 문장을 보이게
     if (!prefs.bigVideo && active >= 0) sentEls[active].scrollIntoView({ block: "center" });
   }
-  // 크게 보기의 현재 문장. 번역은 대본과 같이 `번역` 설정을 따르고(.ko), 영어를 누르면 그 문장을 재생한다
+  // 크게 보기의 현재 문장. 번역은 대본과 같이 `번역` 설정과 `뜻`을 따르고, 영어를 누르면 그 문장을 재생한다
   function renderNow() {
     var i = cur(), s = S[i];
     nowEl.textContent = "";
     var en = el("p", "now-en", english(s));
     en.dataset.play = i;
     nowEl.appendChild(en);
-    if (s.korean) nowEl.appendChild(el("p", "now-ko ko", s.korean));
+    if (s.korean) {
+      var b = meaningButton();
+      b.dataset.meaning = i;
+      en.appendChild(b);
+      nowEl.appendChild(koEl("p", "now-ko ko", i));
+    }
+    paintKo();
+  }
+  function koEl(tag, cls, i) {
+    var k = el(tag, cls, S[i].korean);
+    k.dataset.ko = i;
+    return k;
   }
   function togglePref(name) {
     prefs[name] = !prefs[name];
-    if (name === "showKo") {
-      document.querySelectorAll(".ko.revealed").forEach(function (k) { k.classList.remove("revealed"); });
-    }
-    if (name === "notes" || name === "allKo") {
-      closeSheet();
-      peek.hidden = true;
-    }
+    if (name === "showKo") koShown = -1;
+    if (name === "notes") closeSheet();
     applyPrefs();
     savePrefs();
   }
@@ -1285,11 +1301,17 @@ function ytcardsViewer(DATA) {
       if (cardEls[active]) cardEls[active].classList.remove("active");
     }
     active = i;
+    if (koShown !== i) koShown = -1;
+    if (i >= 0 && S[i].korean) {
+      meaningBtn.dataset.meaning = i;
+      sentEls[i].after(meaningBtn);
+    } else {
+      meaningBtn.remove();
+    }
     paintAhead();
     posEl.textContent = (cur() + 1) + " / " + S.length;
     renderRec();
     renderNow();
-    if (!peek.hidden && Number(peek.dataset.i) !== i) peek.hidden = true;
     if (i >= 0) {
       sentEls[i].classList.add("active");
       if (cardEls[i]) cardEls[i].classList.add("active");
@@ -1392,10 +1414,10 @@ function ytcardsViewer(DATA) {
     if (t.closest("#rec-del")) { recording.remove(); return; }
     if (t.closest("#rec-clear")) { recording.clearAll(); return; }
 
-    var ko = t.closest(".ko");
-    if (ko && document.body.classList.contains("hide-ko") && !ko.classList.contains("revealed")) {
-      ko.classList.add("revealed");
-      scheduleLayout();
+    var mb = t.closest("[data-meaning]");
+    if (mb) {
+      // 크게 보기의 `뜻`은 영어 문장(누르면 재생) 안에 있으므로 재생보다 먼저 처리
+      toggleMeaning(Number(mb.dataset.meaning));
       return;
     }
     if (t.closest("[data-close-sheet]")) { closeSheet(); return; }
@@ -1415,7 +1437,6 @@ function ytcardsViewer(DATA) {
     if (sent) {
       var si = Number(sent.dataset.i);
       queue.playAt(si, false);
-      showPeek(si);
       openSheet(si);
     }
   });
@@ -1441,11 +1462,12 @@ function ytcardsViewer(DATA) {
       case "ArrowRight": queue.step(1); break;
       case "r": case "R": cycleMode(); break;
       case "t": case "T": togglePref("showKo"); break;
+      case "k": case "K": toggleMeaning(cur()); break;
       case "h": case "H": togglePref("hideAhead"); break;
       case "b": case "B": toggleBig(); break;
       case "v": case "V": if (!e.repeat) recording.holdStart(); break;
       case "c": case "C": recording.compare(); break;
-      case "Escape": closeSheet(); peek.hidden = true; break;
+      case "Escape": closeSheet(); break;
       default: handled = false;
     }
     if (handled) e.preventDefault();
@@ -1474,7 +1496,7 @@ function ytcardsViewer(DATA) {
     if (active >= 0 && prefs.follow) sentEls[active].scrollIntoView({ block: "center" });
   });
   wide.addEventListener("change", function () {
-    if (wide.matches) closeSheet(); else peek.hidden = true;
+    if (wide.matches) closeSheet();
     scheduleLayout();
   });
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(scheduleLayout);
