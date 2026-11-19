@@ -177,18 +177,28 @@ body:not(.show-notes) .notes-only { display: none !important; }
 
 /* ---- script ---- */
 .para { margin: 0 0 14px; }
-.para p { margin: 0; font-size: 1.05rem; line-height: 1.75; }
+.para p { margin: 0; font-size: 1.05rem; line-height: 1.75; position: relative; }
+/* 문장마다 한 줄 (문단은 말이 끊긴 곳에서 나눈다) */
+.para .sent { display: block; margin-top: 4px; }
+.para br { display: none; }
 /* 위쪽에 붙어 있는 영상에 가리지 않게 (--video-h는 syncHeights가 채움) */
 .sent { cursor: pointer; border-radius: 3px; padding: 1px 0; transition: background 0.15s; scroll-margin: calc(var(--video-h, 0px) + 90px) 0 160px; }
 .show-notes .sent.card { background: linear-gradient(transparent 58%, var(--mark) 58%); }
 .sent.hover { background: var(--mark); }
 .sent.active { background: var(--active-bg); box-shadow: 0 0 0 2px var(--active-bg); }
 .sent:hover { text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 4px; }
-/* 번역: `번역`을 켜면 문장마다 아래 줄에, 끄면 원문만 (지금 문장만 `뜻`으로 펼침) */
+/* 번역: `번역`을 켜면 문장마다 아래 줄에, 끄면 원문만 (지금 문장만 `뜻`으로 띄움) */
 .ko-line { display: none; color: var(--muted); font-size: 0.88rem; line-height: 1.5; margin-bottom: 2px; }
-.show-ko .sent { display: block; margin-top: 4px; }
-.show-ko .para br { display: none; }
 .show-ko .ko-line, .ko-line.revealed { display: block; }
+/* `뜻`: 영어 문장 바로 아래에 떠서 대본을 밀어내지 않는다 (top을 정하지 않아 문장 바로 아래 자리에 놓임).
+   지금 문장은 그대로 보이고 뒤 문장 위에 겹친다. 누르면 닫힘 */
+body:not(.show-ko) .ko-line.revealed {
+  position: absolute; left: 0; right: 0; z-index: 4;
+  margin-top: 4px; padding: 6px 12px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px;
+  box-shadow: var(--shadow-lg); font-size: 0.95rem; cursor: pointer;
+}
 .meaning {
   border: 1px solid var(--line); background: var(--bg); color: var(--muted);
   border-radius: 999px; font-size: 0.75rem; line-height: 1.5; padding: 1px 10px;
@@ -1066,7 +1076,7 @@ function ytcardsViewer(DATA) {
     notesCol.appendChild(card);
     cardEls[i] = card;
   });
-  // 지금 문장의 번역만 펼치는 `뜻` 버튼. 대본에서는 지금 문장 바로 뒤로 옮겨 다닌다
+  // 지금 문장의 번역만 띄우는 `뜻` 버튼. 대본에서는 지금 문장 끝으로 옮겨 다닌다
   var koShown = -1; // `뜻`으로 펼친 문장 (지금 문장이 바뀌면 다시 접힌다)
   var meaningBtn = meaningButton();
   function meaningButton() {
@@ -1304,7 +1314,7 @@ function ytcardsViewer(DATA) {
     if (koShown !== i) koShown = -1;
     if (i >= 0 && S[i].korean) {
       meaningBtn.dataset.meaning = i;
-      sentEls[i].after(meaningBtn);
+      sentEls[i].appendChild(meaningBtn);
     } else {
       meaningBtn.remove();
     }
@@ -1418,6 +1428,10 @@ function ytcardsViewer(DATA) {
     if (mb) {
       // 크게 보기의 `뜻`은 영어 문장(누르면 재생) 안에 있으므로 재생보다 먼저 처리
       toggleMeaning(Number(mb.dataset.meaning));
+      return;
+    }
+    if (t.closest(".ko-line.revealed") && !prefs.showKo) {
+      toggleMeaning(koShown);
       return;
     }
     if (t.closest("[data-close-sheet]")) { closeSheet(); return; }
