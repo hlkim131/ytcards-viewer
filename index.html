@@ -331,6 +331,19 @@ body:not(.show-ko) .ko:not(.revealed) { display: none; }
 .info-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 6px 0 2px; }
 .linkish { border: 0; background: none; padding: 0; color: var(--muted); font-size: 0.75rem; cursor: pointer; text-decoration: underline; }
 .linkish:disabled, .chip:disabled { opacity: 0.4; cursor: default; }
+/* 묶음만 보기: 지금 묶음(이어진 3문장)만 남기고 대본의 나머지는 숨긴다 */
+.chunk-head { display: none; }
+.chunk-view .chunk-head.in-chunk {
+  display: block; margin: 0 0 6px; padding-bottom: 6px; border-bottom: 1px solid var(--line);
+  font-size: 0.85rem; line-height: 1.5; color: var(--muted);
+}
+.chunk-head .expr { color: var(--text); font-weight: 600; }
+.chunk-view .para:not(.in-chunk),
+.chunk-view .sent:not(.in-chunk),
+.chunk-view .ko-line:not(.in-chunk),
+.chunk-view .note-card:not(.in-chunk) { display: none; }
+.chunk-view .para { margin: 0; }
+.no-chunks #chunk-btn { display: none; }
 .sent.has-rec::after { content: "🎙"; font-size: 0.7em; margin-left: 2px; opacity: 0.55; }
 /* ---- 가로 화면 (가로로 돌린 휴대폰): 높이가 모자라고 폭이 남으니 영상은 왼쪽에 화면 높이 가득,
    대본과 컨트롤러는 오른쪽에. --left-w(영상 칸 폭)는 syncHeights가 채운다. 영상을 끄면 원래 배치 ---- */
@@ -425,6 +438,7 @@ body:not(.show-ko) .ko:not(.revealed) { display: none; }
     <div class="toast" id="toast" aria-live="polite"></div>
     <div class="ctl-row ctl-status">
       <span class="pos" id="pos"></span>
+      <button class="chip" id="chunk-btn" data-pref="chunkView" aria-pressed="false" title="3문장 묶음만 보기 (G)">묶음</button>
       <button class="chip" data-pref="hideAhead" aria-pressed="false" title="다음 문장 가리기 (H)">가리기</button>
       <button class="chip" id="mode-btn" title="재생 방식 (R)"></button>
       <button class="chip" id="rate" title="재생 속도">1.0×</button>
@@ -443,7 +457,7 @@ body:not(.show-ko) .ko:not(.revealed) { display: none; }
       <button class="pad rec" id="rec-btn" aria-pressed="false" title="누르는 동안 녹음 (V)">🎙 말하기</button>
       <button class="pad" id="cmp-btn" disabled title="원본 → 내 녹음 (C)">비교</button>
     </div>
-    <p class="keys">Space 재생/멈춤 · ←/→ 이전/다음 문장 · R 재생 방식 · T 번역 · K 지금 문장 뜻 · H 다음 문장 가리기 · B 세로 영상 크게 · V 누르는 동안 녹음 · C 비교 · 컨트롤러를 좌우로 밀어도 이동</p>
+    <p class="keys">Space 재생/멈춤 · ←/→ 이전/다음 문장 · R 재생 방식 · G 묶음만 보기 · T 번역 · K 지금 문장 뜻 · H 다음 문장 가리기 · B 세로 영상 크게 · V 누르는 동안 녹음 · C 비교 · 컨트롤러를 좌우로 밀어도 이동</p>
   </div>
 </div>
 
@@ -463,12 +477,16 @@ body:not(.show-ko) .ko:not(.revealed) { display: none; }
 // o.onPlayingChange()    isPlaying()이 바뀌었을 수 있을 때 (쉬는 구간 시작·끝)
 // 바깥에서 오디오 이벤트를 넘겨준다: timeupdate·play·pause·seeked마다 tick(), ended에서 ended()
 // rate()는 지금 속도 (문장별 녹음이 녹음 시간 한도를 정할 때 씀)
+// setRange({from, to}) 묶음: 이어서·전체 반복이 문장 from–to(포함)만 재생한다.
+//   이어서는 to 끝에서 멈추고, 전체 반복은 잠깐 쉬고 from으로 돌아간다. null이면 영상 전체
+// cue(i) 재생하지 않고 문장 i 처음으로 옮겨 현재 문장으로 둔다
 function ytcardsQueue(o) {
   "use strict";
   var S = o.sentences, audio = o.audio, timers = o.timers;
   var onActive = o.onActive || function () {};
   var onPlayingChange = o.onPlayingChange || function () {};
   var TAIL = 0.15; // 문장 끝 여유 (초)
+  var RANGE_GAP = 1.0; // 묶음을 반복할 때 처음으로 돌아가기 전에 쉬는 시간 (초)
   var mode = o.mode, rate = o.rate;
   // seg: 한 문장 재생 {i, gap, done}. 끝나면 gap초 쉬고 done을 부른다 (비교 듣기에서 씀).
   // seg가 null이면 이어서 재생 중이거나 멈춘 상태
@@ -476,6 +494,7 @@ function ytcardsQueue(o) {
   var gapTimer = null;
   var hold = -1; // 한 문장을 다 재생하고 멈췄을 때 현재 문장으로 유지할 문장 (끝의 여유에서 다음 문장으로 넘어가지 않게)
   var active = -1;
+  var range = null; // 묶음 {from, to}
   audio.playbackRate = rate;
 
   function current() { return Math.max(active, 0); }
@@ -554,6 +573,19 @@ function ytcardsQueue(o) {
       endSegment(s);
     }
   }
+  // 묶음 끝: 이어서는 멈추고, 전체 반복은 쉬었다가 묶음 처음부터
+  function finishRange() {
+    var r = range;
+    audio.pause();
+    hold = r.to;
+    if (mode !== "all") return;
+    gapTimer = timers.setTimeout(function () {
+      gapTimer = null;
+      onPlayingChange();
+      if (range === r) playContinuous(r.from, true);
+    }, RANGE_GAP * 1000 / rate);
+    onPlayingChange();
+  }
   function endSegment(s) {
     onPlayingChange();
     if (seg !== s) return; // 그사이 다른 재생을 시작했으면 무시
@@ -586,8 +618,20 @@ function ytcardsQueue(o) {
       hold = -1;
       start();
     } else {
+      // 묶음을 끝까지 들었으면 묶음 처음부터 다시
+      if (range && !oneSentenceMode() && i >= range.to) i = range.from;
       playAt(i, true);
     }
+  }
+  function setRange(r) {
+    range = r ? { from: r.from, to: r.to } : null;
+  }
+  function cue(i) {
+    stop();
+    i = Math.min(S.length - 1, Math.max(0, i));
+    audio.currentTime = S[i].start;
+    hold = i;
+    setActive(i, true);
   }
   // 재생 중에 방식을 바꾸면 지금 문장부터 새 방식을 따른다 (비교 듣기 중이면 그대로 둔다)
   function setMode(m) {
@@ -603,7 +647,10 @@ function ytcardsQueue(o) {
 
   function tick() {
     if (seg && !audio.paused && audio.currentTime >= S[seg.i].end + TAIL) finishSegment();
+    else if (!seg && range && !audio.paused && audio.currentTime >= S[range.to].end + TAIL) finishRange();
     var i = indexAt(audio.currentTime);
+    // 묶음을 재생하는 동안은 묶음 밖 문장을 현재 문장으로 삼지 않는다 (끝의 여유에서 다음 문장이 시작해도)
+    if (range) i = Math.min(range.to, Math.max(range.from, i));
     // 한 문장 재생은 끝의 여유(TAIL)에서 다음 문장으로 넘어가지 않게 한다
     if (seg) i = seg.i;
     else if (hold >= 0 && audio.paused) i = hold;
@@ -613,12 +660,13 @@ function ytcardsQueue(o) {
   // 마지막 문장은 TAIL 전에 오디오가 끝날 수 있다
   function ended() {
     if (seg) finishSegment();
+    else if (range) finishRange();
     else if (mode === "all") playContinuous(0, true);
   }
 
   return {
     playAt: playAt, playSentence: playSentence, toggle: toggle, step: step, stop: stop,
-    setMode: setMode, setRate: setRate,
+    setMode: setMode, setRate: setRate, setRange: setRange, cue: cue,
     tick: tick, ended: ended,
     current: current, isPlaying: isPlaying, rate: function () { return rate; },
   };
@@ -934,6 +982,10 @@ function ytcardsViewer(DATA) {
   // 재생 방식: 재생·이전·다음·문장 누르기가 모두 이 방식대로 재생한다
   var MODES = ["one", "loop", "cont", "all"];
   var MODE_LABEL = { one: "한 문장", loop: "한 문장 반복", cont: "이어서", all: "전체 반복" };
+  // 묶음만 보기에서는 이어서·전체 반복이 지금 묶음 안에서만
+  var CHUNK_MODE_LABEL = { one: "한 문장", loop: "한 문장 반복", cont: "묶음 한 번", all: "묶음 반복" };
+  // 묶음: 이어진 문장 {from, to(포함), expression, meaning}. 예전 study.html에는 없다
+  var C = DATA.chunks || [];
   var NOTE_LABEL = { vocab: "어휘", grammar: "문법", listening: "듣기", culture: "문화" };
   var wide = window.matchMedia("(min-width: 900px) and (min-height: 501px)");
   // 가로로 돌린 휴대폰: 영상은 왼쪽, 대본·컨트롤러는 오른쪽 (CSS의 "가로 화면"과 같은 조건)
@@ -964,6 +1016,8 @@ function ytcardsViewer(DATA) {
   var prefs = {
     showKo: false, notes: false, expandAll: false, follow: true, rate: 1.0, hideAhead: false, video: true, bigVideo: false,
     mode: "one",
+    // 묶음만 보기와 그때의 재생 방식 (묶음은 처음부터 반복해 듣는 것이 기본)
+    chunkView: false, chunkMode: "all",
   };
   try {
     var saved = JSON.parse(localStorage.getItem(PREF_KEY) || "{}");
@@ -971,6 +1025,7 @@ function ytcardsViewer(DATA) {
     // 예전 "번역 가리기"(hideKo)를 끈 상태였으면 "번역"(showKo)을 켠 상태로 옮긴다
     if (saved.hideKo === false && !("showKo" in saved)) prefs.showKo = true;
     if (!(prefs.mode in MODE_LABEL)) prefs.mode = "one";
+    if (!(prefs.chunkMode in MODE_LABEL)) prefs.chunkMode = "all";
   } catch (e) {}
   function savePrefs() {
     try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch (e) {}
@@ -989,6 +1044,9 @@ function ytcardsViewer(DATA) {
     return e;
   }
   function english(s) { return s.corrected || s.text; }
+  function chunkOn() { return !!prefs.chunkView && C.length > 0; }
+  // 지금 쓰는 재생 방식 (묶음만 보기와 대본 전체가 따로 기억한다)
+  function curMode() { return chunkOn() ? prefs.chunkMode : prefs.mode; }
   // 문장을 눌렀을 때 휴대폰 하단 시트를 띄울지: 해설을 켰고 해설이 있는 문장일 때만
   function wantsDetail(i) { return prefs.notes && !!S[i].card; }
   function tsButton(i) {
@@ -1021,7 +1079,7 @@ function ytcardsViewer(DATA) {
   meta.appendChild(el("span", null, DATA.source_label));
   var cardIdx = [];
   S.forEach(function (s, i) { if (s.card) cardIdx.push(i); });
-  meta.appendChild(el("span", null, "문장 " + S.length + " · 해설 " + cardIdx.length));
+  meta.appendChild(el("span", null, "문장 " + S.length + " · 해설 " + cardIdx.length + (C.length ? " · 묶음 " + C.length : "")));
   // 녹음이 안 될 때 원인을 알 수 있게: 어떤 주소로 열었는지, 브라우저가 안전한 페이지로 보는지
   meta.appendChild(el("span", "diag", "열린 방식 " + location.protocol.replace(":", "") +
     " · 안전한 페이지 " + (window.isSecureContext ? "예" : "아니오") +
@@ -1040,11 +1098,28 @@ function ytcardsViewer(DATA) {
   });
 
   var sentEls = [];
+  var koEls = [];
+  var paraOf = [];
+  var chunkHeads = [];
+  var chunkAt = {}; // 묶음 첫 문장 → 묶음 번호
+  C.forEach(function (c, k) { chunkAt[c.from] = k; });
   paras.forEach(function (idx) {
     var sec = el("section", "para");
     var p = el("p");
     idx.forEach(function (i, k) {
       var s = S[i];
+      paraOf[i] = sec;
+      if (i in chunkAt) {
+        var c = C[chunkAt[i]];
+        var head = el("div", "chunk-head", "묶음 " + (chunkAt[i] + 1) + " / " + C.length);
+        if (c.expression) {
+          head.appendChild(document.createTextNode(" · "));
+          head.appendChild(el("span", "expr", c.expression));
+          if (c.meaning) head.appendChild(document.createTextNode(" — " + c.meaning));
+        }
+        chunkHeads[chunkAt[i]] = head;
+        p.appendChild(head);
+      }
       var span = el("span", "sent" + (s.card ? " card" : ""), english(s));
       span.dataset.i = i;
       sentEls[i] = span;
@@ -1052,6 +1127,7 @@ function ytcardsViewer(DATA) {
       if (s.korean) {
         var ko = el("span", "ko-line ko", s.korean);
         ko.dataset.ko = i;
+        koEls[i] = ko;
         p.appendChild(ko);
       }
       if (k < idx.length - 1) {
@@ -1134,21 +1210,23 @@ function ytcardsViewer(DATA) {
     return sentEls[i].getBoundingClientRect().top - notesCol.getBoundingClientRect().top;
   }
   // 기준 카드: 재생 중인 해설 문장, 없으면 화면에 보이는 첫 해설 문장
-  function anchorPos() {
-    var k = cardIdx.indexOf(active);
+  function anchorPos(L) {
+    var k = L.indexOf(active);
     if (k >= 0) return k;
-    for (k = 0; k < cardIdx.length; k++) {
-      if (sentEls[cardIdx[k]].getBoundingClientRect().bottom > 0) return k;
+    for (k = 0; k < L.length; k++) {
+      if (sentEls[L[k]].getBoundingClientRect().bottom > 0) return k;
     }
-    return cardIdx.length - 1;
+    return L.length - 1;
   }
   function layout() {
-    if (!wide.matches || !cardIdx.length || !prefs.notes) return;
+    // 묶음만 보기에서는 지금 묶음의 해설 카드만 보인다
+    var L = chunkOn() ? cardIdx.filter(inChunk) : cardIdx;
+    if (!wide.matches || !L.length || !prefs.notes) return;
     var GAP = 10;
-    var want = cardIdx.map(function (i) { return sentTop(i) - 6; });
-    var h = cardIdx.map(function (i) { return cardEls[i].offsetHeight; });
+    var want = L.map(function (i) { return sentTop(i) - 6; });
+    var h = L.map(function (i) { return cardEls[i].offsetHeight; });
     var pos = [];
-    var a = anchorPos();
+    var a = anchorPos(L);
     // 기준 카드는 문장 높이에 맞추고, 뒤 카드는 아래로, 앞 카드는 위로 밀어 겹치지 않게 한다
     pos[a] = want[a];
     for (var k = a + 1; k < want.length; k++) pos[k] = Math.max(want[k], pos[k - 1] + h[k - 1] + GAP);
@@ -1156,7 +1234,7 @@ function ytcardsViewer(DATA) {
     // 열 위로 넘친 경우만 다시 아래로 민다
     pos[0] = Math.max(pos[0], 0);
     for (k = 1; k < want.length; k++) pos[k] = Math.max(pos[k], pos[k - 1] + h[k - 1] + GAP);
-    cardIdx.forEach(function (i, k) { cardEls[i].style.top = pos[k] + "px"; });
+    L.forEach(function (i, k) { cardEls[i].style.top = pos[k] + "px"; });
     var last = want.length - 1;
     notesCol.style.minHeight = (pos[last] + h[last]) + "px";
   }
@@ -1212,11 +1290,13 @@ function ytcardsViewer(DATA) {
   var CLASS_FOR = { showKo: "show-ko", notes: "show-notes", hideAhead: "hide-ahead", video: "show-video" };
   function applyPrefs() {
     for (var k in CLASS_FOR) document.body.classList.toggle(CLASS_FOR[k], !!prefs[k]);
+    document.body.classList.toggle("chunk-view", chunkOn());
+    document.body.classList.toggle("no-chunks", !C.length);
     document.querySelectorAll("[data-pref]").forEach(function (b) {
       b.setAttribute("aria-pressed", String(!!prefs[b.dataset.pref]));
     });
     rateBtn.textContent = (prefs.rate % 1 ? String(prefs.rate) : prefs.rate.toFixed(1)) + "×";
-    modeBtn.textContent = MODE_LABEL[prefs.mode];
+    modeBtn.textContent = (chunkOn() ? CHUNK_MODE_LABEL : MODE_LABEL)[curMode()];
     applyBig();
     updateOpen();
     syncHeights();
@@ -1260,6 +1340,7 @@ function ytcardsViewer(DATA) {
     return k;
   }
   function togglePref(name) {
+    if (name === "chunkView") { toggleChunkView(); return; }
     prefs[name] = !prefs[name];
     if (name === "showKo") koShown = -1;
     if (name === "notes") closeSheet();
@@ -1273,10 +1354,65 @@ function ytcardsViewer(DATA) {
   // ---- playback: 재생 규칙은 재생 목록(queue.js)이 정하고, 여기서는 화면에 그리고 영상 이벤트를 넘긴다 ----
   var active = -1;
   var queue = ytcardsQueue({
-    sentences: S, audio: media, timers: window, mode: prefs.mode, rate: prefs.rate,
+    sentences: S, audio: media, timers: window, mode: curMode(), rate: prefs.rate,
     onActive: showActive, onPlayingChange: syncPlayIcon,
   });
   function cur() { return queue.current(); }
+
+  // ---- 묶음만 보기: 지금 묶음의 문장만 보이고, 재생 목록은 묶음 안에서만 재생한다 ----
+  var chunkK = -1;
+  function inChunk(i) { return chunkK >= 0 && i >= C[chunkK].from && i <= C[chunkK].to; }
+  // 문장 i가 든 묶음, 없으면 i 뒤의 첫 묶음, 그것도 없으면 마지막 묶음
+  function chunkFor(i) {
+    for (var k = 0; k < C.length; k++) if (C[k].to >= i) return k;
+    return C.length - 1;
+  }
+  function paintChunk() {
+    var on = chunkOn();
+    sentEls.forEach(function (e, i) {
+      var inside = on && inChunk(i);
+      e.classList.toggle("in-chunk", inside);
+      if (koEls[i]) koEls[i].classList.toggle("in-chunk", inside);
+      if (cardEls[i]) cardEls[i].classList.toggle("in-chunk", inside);
+    });
+    document.querySelectorAll(".para.in-chunk").forEach(function (e) { e.classList.remove("in-chunk"); });
+    chunkHeads.forEach(function (h, k) { h.classList.toggle("in-chunk", on && k === chunkK); });
+    if (on) for (var i = C[chunkK].from; i <= C[chunkK].to; i++) paraOf[i].classList.add("in-chunk");
+  }
+  // 묶음 k로 옮긴다. play면 묶음 처음부터 재생 방식대로 재생, 아니면 옮기기만
+  function setChunk(k, play) {
+    chunkK = Math.min(C.length - 1, Math.max(0, k));
+    queue.setRange(C[chunkK]);
+    paintChunk();
+    if (play) queue.playAt(C[chunkK].from, true);
+    else queue.cue(C[chunkK].from);
+    scheduleLayout();
+  }
+  function toggleChunkView() {
+    if (!C.length) return;
+    prefs.chunkView = !prefs.chunkView;
+    queue.setMode(curMode());
+    if (chunkOn()) {
+      setChunk(chunkFor(cur()), false);
+    } else {
+      queue.setRange(null);
+      chunkK = -1;
+      paintChunk();
+    }
+    closeSheet();
+    applyPrefs();
+    savePrefs();
+    showPos();
+    if (active >= 0 && !document.body.classList.contains("big")) sentEls[active].scrollIntoView({ block: "center" });
+  }
+  // 이전·다음 (버튼·스와이프·화살표): 묶음만 보기에서는 묶음 단위
+  function step(delta) {
+    if (chunkOn()) setChunk(chunkK + delta, true);
+    else queue.step(delta);
+  }
+  function showPos() {
+    posEl.textContent = chunkOn() ? "묶음 " + (chunkK + 1) + " / " + C.length : (cur() + 1) + " / " + S.length;
+  }
 
   // ---- 문장별 녹음: 녹음 흐름은 recording.js가 정하고, 여기서는 버튼·🎙 표시·안내를 그린다 ----
   var recBtn = document.getElementById("rec-btn");
@@ -1329,7 +1465,7 @@ function ytcardsViewer(DATA) {
       meaningBtn.remove();
     }
     paintAhead();
-    posEl.textContent = (cur() + 1) + " / " + S.length;
+    showPos();
     renderRec();
     renderNow();
     if (i >= 0) {
@@ -1356,8 +1492,9 @@ function ytcardsViewer(DATA) {
     });
   }
   function cycleMode() {
-    prefs.mode = MODES[(MODES.indexOf(prefs.mode) + 1) % MODES.length];
-    queue.setMode(prefs.mode);
+    var key = chunkOn() ? "chunkMode" : "mode";
+    prefs[key] = MODES[(MODES.indexOf(prefs[key]) + 1) % MODES.length];
+    queue.setMode(prefs[key]);
     applyPrefs();
     savePrefs();
   }
@@ -1404,8 +1541,8 @@ function ytcardsViewer(DATA) {
   bigBtn.addEventListener("click", toggleBig);
 
   playBtn.addEventListener("click", function () { queue.toggle(); });
-  document.getElementById("prev").addEventListener("click", function () { queue.step(-1); });
-  document.getElementById("next").addEventListener("click", function () { queue.step(1); });
+  document.getElementById("prev").addEventListener("click", function () { step(-1); });
+  document.getElementById("next").addEventListener("click", function () { step(1); });
   modeBtn.addEventListener("click", cycleMode);
   rateBtn.addEventListener("click", cycleRate);
 
@@ -1419,7 +1556,7 @@ function ytcardsViewer(DATA) {
     if (!swipe) return;
     var p = e.changedTouches[0];
     var dx = p.clientX - swipe.x, dy = p.clientY - swipe.y;
-    if (Math.abs(dx) > 50 && Math.abs(dy) < 40 && Date.now() - swipe.t < 600) queue.step(dx < 0 ? 1 : -1);
+    if (Math.abs(dx) > 50 && Math.abs(dy) < 40 && Date.now() - swipe.t < 600) step(dx < 0 ? 1 : -1);
     swipe = null;
   }, { passive: true });
 
@@ -1482,9 +1619,10 @@ function ytcardsViewer(DATA) {
     var handled = true;
     switch (e.key) {
       case " ": queue.toggle(); break;
-      case "ArrowLeft": queue.step(-1); break;
-      case "ArrowRight": queue.step(1); break;
+      case "ArrowLeft": step(-1); break;
+      case "ArrowRight": step(1); break;
       case "r": case "R": cycleMode(); break;
+      case "g": case "G": toggleChunkView(); break;
       case "t": case "T": togglePref("showKo"); break;
       case "k": case "K": toggleMeaning(cur()); break;
       case "h": case "H": togglePref("hideAhead"); break;
@@ -1539,6 +1677,8 @@ function ytcardsViewer(DATA) {
   renderRec();
   renderNow();
   paintAhead();
+  // 묶음만 보기로 열었으면 첫 묶음부터
+  if (chunkOn()) setChunk(0, false);
   applyPrefs();
   syncHeights();
 }
